@@ -18,8 +18,13 @@ engine = create_engine(
 # Create session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# Base class for models
+# Base class for models - import all models to register them
 Base = declarative_base()
+
+# Import models to ensure they're registered with Base
+from app.models.user import User
+from app.models.widget import Widget
+from app.models.submission import Submission
 
 # Dependency to get DB session
 def get_db():
@@ -39,3 +44,11 @@ def create_tables():
     logger.info("Creating database tables...")
     Base.metadata.create_all(bind=engine)
     logger.info("Database tables created successfully")
+
+def drop_tables():
+    """
+    Drop all tables in the database.
+    """
+    logger.info("Dropping all database tables...")
+    Base.metadata.drop_all(bind=engine)
+    logger.info("Database tables dropped successfully")

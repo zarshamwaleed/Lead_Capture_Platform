@@ -1,6 +1,8 @@
 ﻿from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from app.core.database import create_tables
+from app.api.auth import router as auth_router
 import logging
 
 # Configure logging
@@ -20,7 +22,7 @@ app = FastAPI(
     openapi_url="/api/openapi.json"
 )
 
-# Configure CORS - Will be properly configured later
+# Configure CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Will be restricted later
@@ -34,6 +36,9 @@ app.add_middleware(
     TrustedHostMiddleware,
     allowed_hosts=["localhost", "127.0.0.1", "*"]
 )
+
+# Include routers
+app.include_router(auth_router, prefix="/api")
 
 # Root endpoint
 @app.get("/")
@@ -52,15 +57,13 @@ async def health_check():
         "service": "lead-capture-api"
     }
 
-# API router placeholder - will be added later
-# from app.api import api_router
-# app.include_router(api_router, prefix="/api")
+# Create tables on startup
+@app.on_event("startup")
+async def startup_event():
+    logger.info("Starting up application...")
+    create_tables()
+    logger.info("Application startup complete")
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(
-        "app.main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True
-    )
+@app.on_event("shutdown")
+async def shutdown_event():
+    logger.info("Shutting down application...")

@@ -3,11 +3,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.core.database import engine, SessionLocal
-from app.core.security import get_password_hash
-from app.models import Base
-from app.models.user import User
-from app.models.widget import Widget
-from app.models.submission import Submission
+from app.models import User, Widget, Submission
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -19,98 +15,114 @@ def seed_database():
     """
     logger.info("Starting database seeding...")
     
-    # Create tables
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
-    
     db = SessionLocal()
     
     try:
         # Create test users
         test_user = User(
             email="test@example.com",
-            password_hash=get_password_hash("test123"),
+            password="test123",
             full_name="Test User",
-            is_active=True,
-            is_verified=True
         )
+        test_user.is_verified = True
         db.add(test_user)
         db.flush()
         
-        # Create sample widgets
+        admin_user = User(
+            email="admin@example.com",
+            password="admin123",
+            full_name="Admin User",
+        )
+        admin_user.is_verified = True
+        db.add(admin_user)
+        db.flush()
+        
+        # Create sample widgets for test user
         sample_widgets = [
-            {
-                "owner_id": test_user.id,
-                "title": "Newsletter Signup",
-                "description": "Subscribe to our newsletter for updates",
-                "widget_type": "signup_form",
-                "fields": ["name", "email"],
-                "button_text": "Subscribe Now",
-                "display_options": {
+            Widget(
+                owner_id=test_user.id,
+                title="Newsletter Signup",
+                description="Subscribe to our newsletter for updates",
+                widget_type="signup_form",
+                fields=["name", "email"],
+                button_text="Subscribe Now",
+                display_options={
                     "theme": "light",
-                    "position": "center"
+                    "position": "center",
+                    "backgroundColor": "#ffffff",
+                    "textColor": "#000000"
                 },
-                "is_active": True
-            },
-            {
-                "owner_id": test_user.id,
-                "title": "Contact Us",
-                "description": "Get in touch with our team",
-                "widget_type": "contact_form",
-                "fields": ["name", "email", "message"],
-                "button_text": "Send Message",
-                "display_options": {
+                is_active=True
+            ),
+            Widget(
+                owner_id=test_user.id,
+                title="Contact Us",
+                description="Get in touch with our team",
+                widget_type="contact_form",
+                fields=["name", "email", "message"],
+                button_text="Send Message",
+                display_options={
                     "theme": "dark",
-                    "position": "bottom-right"
+                    "position": "bottom-right",
+                    "backgroundColor": "#1a1a1a",
+                    "textColor": "#ffffff"
                 },
-                "is_active": True
-            }
+                is_active=True
+            )
         ]
         
         for widget_data in sample_widgets:
-            widget = Widget(**widget_data)
-            db.add(widget)
+            db.add(widget_data)
             db.flush()
             
             # Create some sample submissions
             sample_submissions = [
-                {
-                    "widget_id": widget.id,
-                    "owner_id": test_user.id,
-                    "form_data": {
+                Submission(
+                    widget_id=widget_data.id,
+                    owner_id=test_user.id,
+                    form_data={
                         "name": "John Doe",
                         "email": "john@example.com",
                         "message": "Hello, I'm interested in your services!"
-                    },
-                    "ip_address": "192.168.1.1",
-                    "country": "United States",
-                    "city": "New York",
-                    "status": "new"
-                },
-                {
-                    "widget_id": widget.id,
-                    "owner_id": test_user.id,
-                    "form_data": {
+                    } if widget_data.widget_type == "contact_form" else {
                         "name": "Jane Smith",
-                        "email": "jane@example.com",
-                        "message": "Please send me more information."
+                        "email": "jane@example.com"
                     },
-                    "ip_address": "192.168.1.2",
-                    "country": "United Kingdom",
-                    "city": "London",
-                    "status": "read"
-                }
+                    ip_address="192.168.1.1",
+                    country="United States",
+                    city="New York",
+                    status="new"
+                ),
+                Submission(
+                    widget_id=widget_data.id,
+                    owner_id=test_user.id,
+                    form_data={
+                        "name": "Bob Wilson",
+                        "email": "bob@example.com",
+                        "message": "I'd like to schedule a demo."
+                    } if widget_data.widget_type == "contact_form" else {
+                        "name": "Alice Johnson",
+                        "email": "alice@example.com"
+                    },
+                    ip_address="192.168.1.2",
+                    country="United Kingdom",
+                    city="London",
+                    status="read"
+                )
             ]
             
             for submission_data in sample_submissions:
-                submission = Submission(**submission_data)
-                db.add(submission)
+                db.add(submission_data)
         
         db.commit()
-        logger.info(f"✅ Seeded database with test user (email: test@example.com, password: test123)")
-        logger.info("   - Created 2 widgets")
-        logger.info("   - Created 4 sample submissions")
-        logger.info("   - You can now run the application")
+        
+        logger.info("✅ Database seeded successfully!")
+        logger.info(f"   - Created 2 users:")
+        logger.info(f"     • test@example.com (password: test123)")
+        logger.info(f"     • admin@example.com (password: admin123)")
+        logger.info(f"   - Created {len(sample_widgets)} widgets for test user")
+        logger.info(f"   - Created 4 sample submissions")
+        logger.info(f"   - You can now run the application")
         
     except Exception as e:
         db.rollback()
