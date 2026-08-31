@@ -1,7 +1,7 @@
-# Capstone configuration for evaluator
-run: docker-compose up -d
-seed: docker-compose exec app python scripts/seed.py
-test: pytest
+﻿# Capstone configuration for evaluator
+run: python -m uvicorn app.main:app --reload --port 8000
+seed: python scripts/seed.py
+test: python -m pytest tests/test_simple.py -v
 base_url: http://localhost:8000
 
 endpoints:
@@ -9,5 +9,27 @@ endpoints:
   - /api/docs
   - /api/auth/register
   - /api/auth/login
-  - /api/widgets
-  - /public/submissions
+  - /api/widgets/
+  - /api/widgets/public/{id}/config
+  - /public/submissions/
+  - /api/dashboard/stats
+  - /api/dashboard/summary
+
+features:
+  - authentication: JWT-based user auth with bcrypt
+  - widget_management: Full CRUD with embed snippets
+  - public_submissions: Form submission from external sites
+  - rate_limiting: 10/minute, 50/hour per IP
+  - spam_protection: Keyword filtering and honeypot
+  - geo_enrichment: IP geolocation with fallback providers
+  - email_notifications: Background email processing
+  - dashboard: Analytics and statistics
+  - testing: Comprehensive test suite
+
+test_accounts:
+  - email: test@example.com
+    password: test123
+    role: user
+  - email: admin@example.com
+    password: admin123
+    role: admin

@@ -7,6 +7,7 @@ from app.core.rate_limiter import limiter, rate_limit_exceeded_handler
 from app.api.auth import router as auth_router
 from app.api.widgets import router as widget_router
 from app.api.submissions import router as submission_router
+from app.api.dashboard import router as dashboard_router
 from slowapi.errors import RateLimitExceeded
 import logging
 
@@ -48,11 +49,10 @@ app.add_middleware(
 )
 
 # Include routers
-# Auth and Widget routers use /api prefix
 app.include_router(auth_router, prefix="/api")
 app.include_router(widget_router, prefix="/api")
-# Submission router already has /api prefix in its definition
 app.include_router(submission_router)
+app.include_router(dashboard_router, prefix="/api")
 
 # Serve static files (widget.js)
 app.mount("/", StaticFiles(directory="app/static", html=True), name="static")

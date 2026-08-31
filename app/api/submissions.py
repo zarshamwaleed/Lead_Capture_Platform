@@ -61,8 +61,7 @@ async def process_submission_actions(
         )
         
         # Send webhook if configured
-        # Note: Webhook URL can be stored in widget settings
-        webhook_url = None  # You can add this to widget model
+        webhook_url = None
         if webhook_url:
             logger.info(f"Sending webhook to {webhook_url}")
             payload = {
@@ -76,7 +75,6 @@ async def process_submission_actions(
             
     except Exception as e:
         logger.error(f"Error processing background actions for submission {submission_id}: {e}")
-        # Failure in background task does NOT affect the submission status
 
 @router.post(
     "/", 
@@ -91,18 +89,16 @@ async def create_submission(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ):
-    \"\"\"
+    """
     Public endpoint to submit a form with rate limiting, spam protection, geo enrichment,
     and background email/webhook processing.
-    \"\"\"
-    # Get client IP
+    """
     client_ip = request.client.host if request.client else None
     forwarded = request.headers.get("X-Forwarded-For")
     if forwarded:
         client_ip = forwarded.split(",")[0].strip()
     
     try:
-        # Get the widget
         widget = db.query(Widget).filter(
             Widget.id == submission_data.widget_id,
             Widget.is_active == True
@@ -114,7 +110,6 @@ async def create_submission(
                 detail="Widget not found or inactive"
             )
         
-        # Get the widget owner
         owner = db.query(User).filter(User.id == widget.owner_id).first()
         if not owner:
             raise HTTPException(
@@ -122,7 +117,6 @@ async def create_submission(
                 detail="Widget owner not found"
             )
         
-        # Enhanced spam check
         is_spam, spam_reasons = SpamProtection.check_spam(submission_data.data)
         
         if is_spam:
@@ -132,7 +126,6 @@ async def create_submission(
                 detail="Invalid form data"
             )
         
-        # Validate email if present
         lead_email = None
         if 'email' in submission_data.data:
             is_valid, reason = SpamProtection.validate_email(submission_data.data['email'])
@@ -144,7 +137,6 @@ async def create_submission(
                 )
             lead_email = submission_data.data['email']
         
-        # Check for duplicate submissions (within last 5 minutes)
         duplicate_check = db.query(Submission).filter(
             Submission.widget_id == widget.id,
             Submission.ip_address == client_ip,
@@ -156,7 +148,6 @@ async def create_submission(
                 logger.info(f"Duplicate submission blocked from {client_ip}")
                 return duplicate_check
         
-        # GEO ENRICHMENT: Get location data from IP
         location_data = {}
         if client_ip and client_ip != "127.0.0.1" and client_ip != "::1":
             try:
@@ -166,7 +157,6 @@ async def create_submission(
             except Exception as e:
                 logger.error(f"Geo enrichment error for {client_ip}: {e}")
         
-        # Create submission
         submission = Submission(
             widget_id=widget.id,
             owner_id=widget.owner_id,
@@ -183,8 +173,6 @@ async def create_submission(
         
         logger.info(f"New submission received for widget {widget.id} from IP {client_ip}")
         
-        # Add background tasks for email and webhook processing
-        # These run after the response is sent
         background_tasks.add_task(
             process_submission_actions,
             submission_id=submission.id,
@@ -220,9 +208,9 @@ async def get_submissions(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    \"\"\"
+    """
     Get submissions for the authenticated user with rate limiting.
-    \"\"\"
+    """
     query = db.query(Submission).filter(Submission.owner_id == current_user.id)
     
     if widget_id:
@@ -241,9 +229,9 @@ async def get_submission(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    \"\"\"
+    """
     Get a specific submission.
-    \"\"\"
+    """
     submission = db.query(Submission).filter(
         Submission.id == submission_id,
         Submission.owner_id == current_user.id
@@ -264,9 +252,9 @@ async def update_submission(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    \"\"\"
+    """
     Update submission status.
-    \"\"\"
+    """
     submission = db.query(Submission).filter(
         Submission.id == submission_id,
         Submission.owner_id == current_user.id
@@ -291,9 +279,9 @@ async def get_submission_stats(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    \"\"\"
+    """
     Get submission statistics for the authenticated user.
-    \"\"\"
+    """
     submissions = db.query(Submission).filter(Submission.owner_id == current_user.id).all()
     
     status_counts = {
