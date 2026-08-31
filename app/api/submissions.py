@@ -1,12 +1,14 @@
-﻿from fastapi import APIRouter, Depends, HTTPException, status, Request
+﻿from fastapi import APIRouter, Depends, HTTPException, status, Request, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from datetime import datetime, timedelta
 from app.core.database import get_db
 from app.core.auth import get_current_active_user
-from app.core.rate_limiter import limiter, rate_limit_exceeded_handler
+from app.core.rate_limiter import limiter
 from app.core.spam_protection import SpamProtection
 from app.services.geo_service import GeoService
+from app.services.email_service import EmailService
+from app.services.webhook_service import WebhookService
 from app.models.user import User
 from app.models.widget import Widget
 from app.models.submission import Submission
@@ -24,6 +26,58 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/public/submissions", tags=["Public Submissions"])
 
+# Background task functions
+async def process_submission_actions(
+    submission_id: int,
+    widget_id: int,
+    widget_title: str,
+    owner_email: str,
+    form_data: dict,
+    lead_email: Optional[str] = None
+):
+    """
+    Background task to process email and webhook actions.
+    This runs after the submission is stored.
+    """
+    logger.info(f"Processing background actions for submission {submission_id}")
+    
+    try:
+        # Send confirmation email to lead
+        if lead_email:
+            logger.info(f"Sending confirmation email to {lead_email}")
+            await EmailService.send_confirmation_email(
+                to_email=lead_email,
+                submission_data=form_data,
+                widget_title=widget_title
+            )
+        
+        # Send notification email to widget owner
+        logger.info(f"Sending notification email to {owner_email}")
+        await EmailService.send_lead_notification_email(
+            to_email=owner_email,
+            submission_data=form_data,
+            widget_title=widget_title,
+            widget_id=widget_id
+        )
+        
+        # Send webhook if configured
+        # Note: Webhook URL can be stored in widget settings
+        webhook_url = None  # You can add this to widget model
+        if webhook_url:
+            logger.info(f"Sending webhook to {webhook_url}")
+            payload = {
+                "submission_id": submission_id,
+                "widget_id": widget_id,
+                "widget_title": widget_title,
+                "data": form_data,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            await WebhookService.send_webhook(webhook_url, payload)
+            
+    except Exception as e:
+        logger.error(f"Error processing background actions for submission {submission_id}: {e}")
+        # Failure in background task does NOT affect the submission status
+
 @router.post(
     "/", 
     response_model=SubmissionResponse, 
@@ -34,11 +88,13 @@ router = APIRouter(prefix="/public/submissions", tags=["Public Submissions"])
 async def create_submission(
     request: Request,
     submission_data: SubmissionCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ):
-    """
-    Public endpoint to submit a form with rate limiting, spam protection, and geo enrichment.
-    """
+    \"\"\"
+    Public endpoint to submit a form with rate limiting, spam protection, geo enrichment,
+    and background email/webhook processing.
+    \"\"\"
     # Get client IP
     client_ip = request.client.host if request.client else None
     forwarded = request.headers.get("X-Forwarded-For")
@@ -58,6 +114,14 @@ async def create_submission(
                 detail="Widget not found or inactive"
             )
         
+        # Get the widget owner
+        owner = db.query(User).filter(User.id == widget.owner_id).first()
+        if not owner:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Widget owner not found"
+            )
+        
         # Enhanced spam check
         is_spam, spam_reasons = SpamProtection.check_spam(submission_data.data)
         
@@ -69,6 +133,7 @@ async def create_submission(
             )
         
         # Validate email if present
+        lead_email = None
         if 'email' in submission_data.data:
             is_valid, reason = SpamProtection.validate_email(submission_data.data['email'])
             if not is_valid:
@@ -77,6 +142,7 @@ async def create_submission(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Invalid email: {reason}"
                 )
+            lead_email = submission_data.data['email']
         
         # Check for duplicate submissions (within last 5 minutes)
         duplicate_check = db.query(Submission).filter(
@@ -97,13 +163,10 @@ async def create_submission(
                 location_data, provider_used = await GeoService.get_location(client_ip)
                 if location_data:
                     logger.info(f"Geo enrichment successful for {client_ip} using {provider_used}")
-                else:
-                    logger.info(f"No geo data available for {client_ip}")
             except Exception as e:
                 logger.error(f"Geo enrichment error for {client_ip}: {e}")
-                # Geo enrichment fails gracefully - submission still succeeds
         
-        # Create submission with geo data
+        # Create submission
         submission = Submission(
             widget_id=widget.id,
             owner_id=widget.owner_id,
@@ -119,8 +182,20 @@ async def create_submission(
         db.refresh(submission)
         
         logger.info(f"New submission received for widget {widget.id} from IP {client_ip}")
-        if location_data:
-            logger.info(f"  - Country: {location_data.get('country')}, City: {location_data.get('city')}")
+        
+        # Add background tasks for email and webhook processing
+        # These run after the response is sent
+        background_tasks.add_task(
+            process_submission_actions,
+            submission_id=submission.id,
+            widget_id=widget.id,
+            widget_title=widget.title,
+            owner_email=owner.email,
+            form_data=submission_data.data,
+            lead_email=lead_email
+        )
+        
+        logger.info(f"Added background tasks for submission {submission.id}")
         
         return submission
         
@@ -145,9 +220,9 @@ async def get_submissions(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    """
+    \"\"\"
     Get submissions for the authenticated user with rate limiting.
-    """
+    \"\"\"
     query = db.query(Submission).filter(Submission.owner_id == current_user.id)
     
     if widget_id:
@@ -166,9 +241,9 @@ async def get_submission(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    """
+    \"\"\"
     Get a specific submission.
-    """
+    \"\"\"
     submission = db.query(Submission).filter(
         Submission.id == submission_id,
         Submission.owner_id == current_user.id
@@ -189,9 +264,9 @@ async def update_submission(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    """
+    \"\"\"
     Update submission status.
-    """
+    \"\"\"
     submission = db.query(Submission).filter(
         Submission.id == submission_id,
         Submission.owner_id == current_user.id
@@ -216,9 +291,9 @@ async def get_submission_stats(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    """
+    \"\"\"
     Get submission statistics for the authenticated user.
-    """
+    \"\"\"
     submissions = db.query(Submission).filter(Submission.owner_id == current_user.id).all()
     
     status_counts = {
