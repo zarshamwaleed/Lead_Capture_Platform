@@ -1,8 +1,10 @@
 ﻿from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.staticfiles import StaticFiles
 from app.core.database import create_tables
 from app.api.auth import router as auth_router
+from app.api.widgets import router as widget_router
 import logging
 
 # Configure logging
@@ -39,6 +41,10 @@ app.add_middleware(
 
 # Include routers
 app.include_router(auth_router, prefix="/api")
+app.include_router(widget_router, prefix="/api")
+
+# Serve static files (widget.js)
+app.mount("/", StaticFiles(directory="app/static", html=True), name="static")
 
 # Root endpoint
 @app.get("/")

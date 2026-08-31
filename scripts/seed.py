@@ -68,6 +68,21 @@ def seed_database():
                     "textColor": "#ffffff"
                 },
                 is_active=True
+            ),
+            Widget(
+                owner_id=test_user.id,
+                title="Special Offer",
+                description="Get 20% off your first purchase!",
+                widget_type="cta",
+                fields=["name", "email"],
+                button_text="Claim Offer",
+                display_options={
+                    "theme": "light",
+                    "position": "center",
+                    "backgroundColor": "#ff6b35",
+                    "textColor": "#ffffff"
+                },
+                is_active=True
             )
         ]
         
