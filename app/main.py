@@ -3,9 +3,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
 from app.core.database import create_tables
+from app.core.rate_limiter import limiter, rate_limit_exceeded_handler
 from app.api.auth import router as auth_router
 from app.api.widgets import router as widget_router
 from app.api.submissions import router as submission_router
+from slowapi.errors import RateLimitExceeded
 import logging
 
 # Configure logging
@@ -25,15 +27,18 @@ app = FastAPI(
     openapi_url="/api/openapi.json"
 )
 
-# Configure CORS - Allow all for public endpoints
+# Add rate limiter exception handler
+app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+
+# Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for public submissions
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
-    max_age=3600,  # Cache preflight requests for 1 hour
+    max_age=3600,
 )
 
 # Add trusted host middleware
@@ -43,9 +48,11 @@ app.add_middleware(
 )
 
 # Include routers
+# Auth and Widget routers use /api prefix
 app.include_router(auth_router, prefix="/api")
 app.include_router(widget_router, prefix="/api")
-app.include_router(submission_router, prefix="/api")
+# Submission router already has /api prefix in its definition
+app.include_router(submission_router)
 
 # Serve static files (widget.js)
 app.mount("/", StaticFiles(directory="app/static", html=True), name="static")

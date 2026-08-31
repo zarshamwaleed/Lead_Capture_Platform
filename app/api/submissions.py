@@ -4,6 +4,8 @@ from typing import List, Optional
 from datetime import datetime, timedelta
 from app.core.database import get_db
 from app.core.auth import get_current_active_user
+from app.core.rate_limiter import limiter, rate_limit_exceeded_handler
+from app.core.spam_protection import SpamProtection
 from app.models.user import User
 from app.models.widget import Widget
 from app.models.submission import Submission
@@ -14,22 +16,35 @@ from app.schemas.submission import (
     SubmissionStats,
     SubmissionStatus
 )
+from slowapi.errors import RateLimitExceeded
 import logging
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/public/submissions", tags=["Public Submissions"])
 
-@router.post("/", response_model=SubmissionResponse, status_code=status.HTTP_201_CREATED)
+# Apply rate limiting to submission creation
+@router.post(
+    "/", 
+    response_model=SubmissionResponse, 
+    status_code=status.HTTP_201_CREATED
+)
+@limiter.limit("10/minute")  # 10 requests per minute per IP
+@limiter.limit("50/hour")    # 50 requests per hour per IP
 async def create_submission(
     request: Request,
     submission_data: SubmissionCreate,
     db: Session = Depends(get_db)
 ):
     """
-    Public endpoint to submit a form.
-    No authentication required - this is for visitors on external websites.
+    Public endpoint to submit a form with rate limiting and spam protection.
     """
+    # Get client IP
+    client_ip = request.client.host if request.client else None
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        client_ip = forwarded.split(",")[0].strip()
+    
     try:
         # Get the widget
         widget = db.query(Widget).filter(
@@ -43,16 +58,60 @@ async def create_submission(
                 detail="Widget not found or inactive"
             )
         
-        # Get client IP
-        client_ip = request.client.host if request.client else None
-        forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
-            client_ip = forwarded.split(",")[0].strip()
+        # Check for honeypot (already handled by Pydantic validator)
+        # The validator in SubmissionCreate handles honeypot validation
+        
+        # Enhanced spam check
+        is_spam, spam_reasons = SpamProtection.check_spam(submission_data.data)
+        
+        if is_spam:
+            logger.warning(f"Spam submission blocked from {client_ip}: {spam_reasons}")
+            # Log spam but return success to confuse bots
+            # We could also store it as spam status
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid form data"
+            )
+        
+        # Validate email if present
+        if 'email' in submission_data.data:
+            is_valid, reason = SpamProtection.validate_email(submission_data.data['email'])
+            if not is_valid:
+                logger.warning(f"Invalid email from {client_ip}: {reason}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid email: {reason}"
+                )
+        
+        # Validate phone if present
+        if 'phone' in submission_data.data:
+            is_valid, reason = SpamProtection.validate_phone(submission_data.data['phone'])
+            if not is_valid:
+                logger.warning(f"Invalid phone from {client_ip}: {reason}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid phone: {reason}"
+                )
+        
+        # Check for duplicate submissions (within last 5 minutes)
+        duplicate_check = db.query(Submission).filter(
+            Submission.widget_id == widget.id,
+            Submission.ip_address == client_ip,
+            Submission.created_at > datetime.utcnow() - timedelta(minutes=5)
+        ).first()
+        
+        # If duplicate found, check if it has the same data
+        if duplicate_check:
+            # Compare form data (simplified check)
+            if duplicate_check.form_data == submission_data.data:
+                logger.info(f"Duplicate submission blocked from {client_ip}")
+                # Return success to hide detection
+                return duplicate_check
         
         # Create submission
         submission = Submission(
             widget_id=widget.id,
-            owner_id=widget.owner_id,  # Link to widget owner
+            owner_id=widget.owner_id,
             form_data=submission_data.data,
             ip_address=client_ip,
             status=SubmissionStatus.NEW.value
@@ -78,7 +137,9 @@ async def create_submission(
 
 # Protected endpoints - require authentication
 @router.get("/", response_model=List[SubmissionResponse])
+@limiter.limit("30/minute")  # Stricter limit for API users
 async def get_submissions(
+    request: Request,
     widget_id: Optional[int] = None,
     status: Optional[SubmissionStatus] = None,
     skip: int = 0,
@@ -87,7 +148,7 @@ async def get_submissions(
     db: Session = Depends(get_db)
 ):
     """
-    Get submissions for the authenticated user.
+    Get submissions for the authenticated user with rate limiting.
     """
     query = db.query(Submission).filter(Submission.owner_id == current_user.id)
     
