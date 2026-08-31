@@ -4,7 +4,7 @@ import json
 
 class Settings(BaseSettings):
     # Database
-    DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/lead_capture"
+    DATABASE_URL: str = "sqlite:///./lead_capture.db"
     
     # Security
     SECRET_KEY: str = "your-super-secret-key-change-this-in-production"
@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     # Geo APIs
     GEO_PROVIDER_A_URL: str = "http://ip-api.com/json"
     GEO_PROVIDER_B_URL: str = "https://ipapi.co/json"
+    GEO_CACHE_TTL: int = 3600
     
     # Rate Limiting
     RATE_LIMIT_PER_MINUTE: int = 10

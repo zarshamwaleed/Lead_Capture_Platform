@@ -6,6 +6,7 @@ from app.core.database import get_db
 from app.core.auth import get_current_active_user
 from app.core.rate_limiter import limiter, rate_limit_exceeded_handler
 from app.core.spam_protection import SpamProtection
+from app.services.geo_service import GeoService
 from app.models.user import User
 from app.models.widget import Widget
 from app.models.submission import Submission
@@ -23,21 +24,20 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/public/submissions", tags=["Public Submissions"])
 
-# Apply rate limiting to submission creation
 @router.post(
     "/", 
     response_model=SubmissionResponse, 
     status_code=status.HTTP_201_CREATED
 )
-@limiter.limit("10/minute")  # 10 requests per minute per IP
-@limiter.limit("50/hour")    # 50 requests per hour per IP
+@limiter.limit("10/minute")
+@limiter.limit("50/hour")
 async def create_submission(
     request: Request,
     submission_data: SubmissionCreate,
     db: Session = Depends(get_db)
 ):
     """
-    Public endpoint to submit a form with rate limiting and spam protection.
+    Public endpoint to submit a form with rate limiting, spam protection, and geo enrichment.
     """
     # Get client IP
     client_ip = request.client.host if request.client else None
@@ -58,16 +58,11 @@ async def create_submission(
                 detail="Widget not found or inactive"
             )
         
-        # Check for honeypot (already handled by Pydantic validator)
-        # The validator in SubmissionCreate handles honeypot validation
-        
         # Enhanced spam check
         is_spam, spam_reasons = SpamProtection.check_spam(submission_data.data)
         
         if is_spam:
             logger.warning(f"Spam submission blocked from {client_ip}: {spam_reasons}")
-            # Log spam but return success to confuse bots
-            # We could also store it as spam status
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid form data"
@@ -83,16 +78,6 @@ async def create_submission(
                     detail=f"Invalid email: {reason}"
                 )
         
-        # Validate phone if present
-        if 'phone' in submission_data.data:
-            is_valid, reason = SpamProtection.validate_phone(submission_data.data['phone'])
-            if not is_valid:
-                logger.warning(f"Invalid phone from {client_ip}: {reason}")
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Invalid phone: {reason}"
-                )
-        
         # Check for duplicate submissions (within last 5 minutes)
         duplicate_check = db.query(Submission).filter(
             Submission.widget_id == widget.id,
@@ -100,20 +85,32 @@ async def create_submission(
             Submission.created_at > datetime.utcnow() - timedelta(minutes=5)
         ).first()
         
-        # If duplicate found, check if it has the same data
         if duplicate_check:
-            # Compare form data (simplified check)
             if duplicate_check.form_data == submission_data.data:
                 logger.info(f"Duplicate submission blocked from {client_ip}")
-                # Return success to hide detection
                 return duplicate_check
         
-        # Create submission
+        # GEO ENRICHMENT: Get location data from IP
+        location_data = {}
+        if client_ip and client_ip != "127.0.0.1" and client_ip != "::1":
+            try:
+                location_data, provider_used = await GeoService.get_location(client_ip)
+                if location_data:
+                    logger.info(f"Geo enrichment successful for {client_ip} using {provider_used}")
+                else:
+                    logger.info(f"No geo data available for {client_ip}")
+            except Exception as e:
+                logger.error(f"Geo enrichment error for {client_ip}: {e}")
+                # Geo enrichment fails gracefully - submission still succeeds
+        
+        # Create submission with geo data
         submission = Submission(
             widget_id=widget.id,
             owner_id=widget.owner_id,
             form_data=submission_data.data,
             ip_address=client_ip,
+            country=location_data.get('country') if location_data else None,
+            city=location_data.get('city') if location_data else None,
             status=SubmissionStatus.NEW.value
         )
         
@@ -122,6 +119,8 @@ async def create_submission(
         db.refresh(submission)
         
         logger.info(f"New submission received for widget {widget.id} from IP {client_ip}")
+        if location_data:
+            logger.info(f"  - Country: {location_data.get('country')}, City: {location_data.get('city')}")
         
         return submission
         
@@ -132,12 +131,11 @@ async def create_submission(
         logger.error(f"Error creating submission: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Could not process submission"
+            detail=f"Could not process submission: {str(e)}"
         )
 
-# Protected endpoints - require authentication
 @router.get("/", response_model=List[SubmissionResponse])
-@limiter.limit("30/minute")  # Stricter limit for API users
+@limiter.limit("30/minute")
 async def get_submissions(
     request: Request,
     widget_id: Optional[int] = None,
@@ -221,10 +219,8 @@ async def get_submission_stats(
     """
     Get submission statistics for the authenticated user.
     """
-    # Get all submissions for user
     submissions = db.query(Submission).filter(Submission.owner_id == current_user.id).all()
     
-    # Count by status
     status_counts = {
         SubmissionStatus.NEW.value: 0,
         SubmissionStatus.READ.value: 0,
@@ -237,18 +233,15 @@ async def get_submission_stats(
         if submission.status in status_counts:
             status_counts[submission.status] += 1
     
-    # Count by country
     country_counts = {}
     for submission in submissions:
         if submission.country:
             country_counts[submission.country] = country_counts.get(submission.country, 0) + 1
     
-    # Count by widget
     widget_counts = {}
     for submission in submissions:
         widget_counts[str(submission.widget_id)] = widget_counts.get(str(submission.widget_id), 0) + 1
     
-    # Last 7 days
     last_7_days = []
     for i in range(7):
         day = datetime.utcnow().date() - timedelta(days=i)
